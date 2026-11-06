@@ -1,0 +1,530 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🏀 Идеальный бросок | STEM Проект</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Arial, sans-serif;
+    background: #F4F6F9;
+    color: #2C3E50;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #left { flex: 1; padding: 20px; }
+  #right { width: 380px; padding: 20px; overflow-y: auto; }
+  #court {
+    width: 100%; height: 100%;
+    background: #E0F7FA;
+    border-radius: 8px;
+    display: block;
+  }
+  .card {
+    background: #fff; border: 1px solid #E0E0E0;
+    border-radius: 6px; margin-bottom: 15px; padding: 15px;
+  }
+  .card h3 {
+    font-size: 13px; margin-bottom: 10px; padding-bottom: 8px;
+    border-bottom: 1px solid #E0E0E0;
+  }
+  .row {
+    display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 8px;
+  }
+  .row label { font-size: 13px; }
+  input[type=number] {
+    width: 100px; padding: 6px; font-size: 14px;
+    text-align: center; border: 1px solid #ccc; border-radius: 4px;
+  }
+  button {
+    width: 100%; padding: 10px; border: none; border-radius: 4px;
+    color: white; font-weight: bold; cursor: pointer;
+    font-size: 13px; margin-top: 8px;
+  }
+  #btnHeight { background: #3498DB; }
+  #btnShoot { background: #E67E22; font-size: 15px; padding: 12px; }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px; text-align: center; border-bottom: 1px solid #eee; }
+  th { background: #f0f0f0; font-weight: bold; }
+  .hit { color: #27AE60; font-weight: bold; }
+  .miss { color: #E74C3C; }
+  #journal { max-height: 220px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<div id="left"><canvas id="court"></canvas></div>
+
+<div id="right">
+  <div class="card">
+    <h3>📏 Параметры игрока</h3>
+    <div class="row">
+      <label>Рост (см):</label>
+      <input type="number" id="height" value="170" min="100" max="250">
+    </div>
+    <button id="btnHeight">Применить рост</button>
+  </div>
+
+  <div class="card">
+    <h3>🎯 Совершить бросок</h3>
+    <div class="row"><label>Угол (°):</label><input type="number" id="angle" value="45"></div>
+    <div class="row"><label>Скорость (м/с):</label><input type="number" id="speed" value="7.7" step="0.1"></div>
+    <button id="btnShoot">БРОСОК! 🏀</button>
+  </div>
+
+  <div class="card">
+    <h3>📊 Журнал попыток</h3>
+    <div id="journal">
+      <table>
+        <thead><tr><th>Угол</th><th>Скорость</th><th>Результат</th></tr></thead>
+        <tbody id="journalBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ КОНСТАНТЫ ============
+const G = 9.81;
+const DISTANCE = 5.0;
+const HOOP_HEIGHT = 3.05;
+const PIXELS_PER_METER = 100;
+const START_X_PIXEL = 100;
+const COLORS = {
+  BG: "#F4F6F9", TRIBUNE: "#1A252F", STAND: "#2C3E50",
+  FLOOR: "#D2B48C", SUCCESS: "#27AE60", ERROR: "#E74C3C"
+};
+const SHIRT_COLORS = ["#E74C3C","#3498DB","#F1C40F","#9B59B6","#1ABC9C","#E67E22"];
+
+// ============ ХОЛСТЫ ============
+const canvas = document.getElementById("court");
+const ctx = canvas.getContext("2d");
+
+const bgCanvas = document.createElement("canvas");
+const bgCtx = bgCanvas.getContext("2d");
+
+// ============ СОСТОЯНИЕ ============
+const state = {
+  heightCm: 170,
+  hStart: 2.15,
+  fansState: 0,
+  animating: false,
+  flyingBall: null,
+  trajectory: [],
+  trajectoryVisible: false,
+  message: null
+};
+
+// ============ РАЗМЕРЫ ============
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  bgCanvas.width = rect.width;
+  bgCanvas.height = rect.height;
+  rebuildScene();
+}
+
+function getHoopCoords() {
+  const floorY = canvas.height - 100;
+  const hoopX = START_X_PIXEL + DISTANCE * PIXELS_PER_METER;
+  const hoopY = floorY - HOOP_HEIGHT * PIXELS_PER_METER;
+  return { hoopX, hoopY, floorY };
+}
+
+// ============ СТАТИЧНЫЙ ФОН ============
+function rebuildScene() {
+  const w = bgCanvas.width, h = bgCanvas.height;
+  if (w < 50 || h < 50) return;
+  
+  // ГАРАНТИРОВАННАЯ ОЧИСТКА (убирает старых человечков)
+  bgCtx.clearRect(0, 0, w, h);
+
+  const { hoopX, hoopY, floorY } = getHoopCoords();
+
+  // 1. Трибуны
+  const tribuneH = floorY - 150;
+  bgCtx.fillStyle = COLORS.TRIBUNE;
+  bgCtx.fillRect(0, 0, w, tribuneH);
+
+  const sectorW = (w - 40) / 5;
+  for (let i = 0; i < 5; i++) {
+    const x1 = 20 + i * sectorW;
+    const x2 = x1 + sectorW - 10;
+    bgCtx.fillStyle = COLORS.STAND;
+    bgCtx.fillRect(x1, 10, x2 - x1, tribuneH - 20);
+    bgCtx.strokeStyle = "#111"; bgCtx.lineWidth = 3;
+    bgCtx.strokeRect(x1, 10, x2 - x1, tribuneH - 20);
+    drawFansInSector(bgCtx, x1, 20, x2, tribuneH - 20);
+  }
+
+  // 2. Пол
+  bgCtx.fillStyle = COLORS.FLOOR;
+  bgCtx.fillRect(0, floorY, w, h - floorY);
+  bgCtx.strokeStyle = "#A0522D"; bgCtx.lineWidth = 4;
+  bgCtx.beginPath(); bgCtx.moveTo(0, floorY); bgCtx.lineTo(w, floorY); bgCtx.stroke();
+
+  // 3. Кольцо
+  bgCtx.fillStyle = "#555";
+  bgCtx.fillRect(hoopX - 5, hoopY, 10, floorY - hoopY);
+  bgCtx.fillStyle = "#333";
+  bgCtx.fillRect(hoopX - 25, floorY - 10, 50, 10);
+
+  // Щит
+  bgCtx.fillStyle = "white";
+  bgCtx.fillRect(hoopX + 10, hoopY - 40, 10, 60);
+  bgCtx.strokeStyle = "#333"; bgCtx.lineWidth = 2;
+  bgCtx.strokeRect(hoopX + 10, hoopY - 40, 10, 60);
+
+  // Сетка
+  bgCtx.strokeStyle = "#333"; bgCtx.lineWidth = 4;
+  drawNetLines(bgCtx, hoopX, hoopY);
+  bgCtx.strokeStyle = "white"; bgCtx.lineWidth = 2;
+  drawNetLines(bgCtx, hoopX, hoopY);
+
+  // Дужка
+  bgCtx.strokeStyle = "#E74C3C"; bgCtx.lineWidth = 10;
+  bgCtx.beginPath(); bgCtx.moveTo(hoopX - 35, hoopY); bgCtx.lineTo(hoopX + 35, hoopY); bgCtx.stroke();
+
+  // 4. Игрок
+  drawPlayerAndBall(bgCtx);
+
+  render();
+}
+
+function drawNetLines(c, hx, hy) {
+  const lines = [
+    [hx-35, hy, hx-15, hy+50], [hx+35, hy, hx+15, hy+50], [hx, hy, hx, hy+50],
+    [hx-28, hy+25, hx+28, hy+25], [hx-20, hy+45, hx+20, hy+45]
+  ];
+  for (const [x1,y1,x2,y2] of lines) {
+    c.beginPath(); c.moveTo(x1,y1); c.lineTo(x2,y2); c.stroke();
+  }
+}
+
+function drawFansInSector(c, xStart, yStart, xEnd, yEnd) {
+  const pad = 15, size = 16;
+  let y = yStart + pad;
+  while (y < yEnd - size) {
+    let x = xStart + pad;
+    while (x < xEnd - size) {
+      const shirt = SHIRT_COLORS[Math.floor(Math.random()*SHIRT_COLORS.length)];
+      c.strokeStyle = "#333"; c.lineWidth = 3;
+      c.beginPath();
+      c.moveTo(x, y+size); c.lineTo(x+size/2, y+size+8);
+      c.moveTo(x+size, y+size); c.lineTo(x+size/2, y+size+8);
+      c.stroke();
+
+      c.fillStyle = shirt;
+      c.fillRect(x, y, size, size);
+
+      c.strokeStyle = "#FAD7A1"; c.lineWidth = 4;
+      c.beginPath();
+      if (state.fansState === 1) {
+        c.moveTo(x, y); c.lineTo(x-5, y-10);
+        c.moveTo(x+size, y); c.lineTo(x+size+5, y-10);
+      } else {
+        c.moveTo(x, y+5); c.lineTo(x-5, y+size);
+        c.moveTo(x+size, y+5); c.lineTo(x+size+5, y+size);
+      }
+      c.stroke();
+
+      c.fillStyle = "#FAD7A1";
+      c.beginPath(); c.arc(x+size/2, y-7, size/2 - 2, 0, Math.PI*2); c.fill();
+      c.strokeStyle = "#333"; c.lineWidth = 1; c.stroke();
+
+      x += size + 20;
+    }
+    y += size + 25;
+  }
+}
+
+// ============ ИГРОК ============
+function drawPlayerAndBall(c) {
+  const floorY = c.canvas.height - 100;
+  
+  const heightPx = (state.heightCm / 100) * PIXELS_PER_METER * 1.2;
+  const headR = heightPx * 0.08;
+  const legH = heightPx * 0.45;
+  const torsoH = heightPx * 0.35;
+  const torsoW = heightPx * 0.15;
+
+  const headY = floorY - heightPx + headR;
+  const torsoTopY = floorY - legH - torsoH;
+  
+  // Ноги
+  c.strokeStyle = "#34495E"; c.lineWidth = torsoW / 2;
+  c.beginPath();
+  c.moveTo(START_X_PIXEL - torsoW/3, floorY); 
+  c.lineTo(START_X_PIXEL - torsoW/3, floorY - legH);
+  c.moveTo(START_X_PIXEL + torsoW/3, floorY); 
+  c.lineTo(START_X_PIXEL + torsoW/3, floorY - legH);
+  c.stroke();
+
+  // Туловище
+  c.fillStyle = "#2980B9";
+  c.fillRect(START_X_PIXEL - torsoW, torsoTopY, torsoW * 2, torsoH);
+  c.strokeStyle = "#1A5276"; c.lineWidth = 2;
+  c.strokeRect(START_X_PIXEL - torsoW, torsoTopY, torsoW * 2, torsoH);
+
+  // Голова
+  c.fillStyle = "#FAD7A1";
+  c.beginPath(); c.arc(START_X_PIXEL, headY, headR, 0, Math.PI*2); c.fill();
+  c.strokeStyle = "#333"; c.lineWidth = 2; c.stroke();
+
+  // Рука
+  const armTopY = floorY - (state.hStart * PIXELS_PER_METER);
+  c.strokeStyle = "#2980B9"; c.lineWidth = torsoW / 1.5;
+  c.beginPath();
+  c.moveTo(START_X_PIXEL + torsoW*0.8, torsoTopY + 10);
+  c.lineTo(START_X_PIXEL + torsoW*1.5, armTopY);
+  c.stroke();
+
+  // Мяч в руке
+  if (!state.flyingBall) {
+    const bx = START_X_PIXEL + torsoW*1.5;
+    c.fillStyle = "#E67E22";
+    c.beginPath(); c.arc(bx, armTopY, 14, 0, Math.PI*2); c.fill();
+    c.strokeStyle = "#333"; c.lineWidth = 2; c.stroke();
+  }
+}
+
+// ============ РЕНДЕР ============
+function render() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(bgCanvas, 0, 0);
+
+  if (state.trajectoryVisible && state.trajectory.length > 1) {
+    ctx.strokeStyle = "white"; ctx.lineWidth = 8; ctx.lineJoin = "round";
+    ctx.beginPath();
+    state.trajectory.forEach((p,i)=> i? ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+    ctx.stroke();
+    
+    ctx.strokeStyle = "#2980B9"; ctx.lineWidth = 4; ctx.setLineDash([6,6]);
+    ctx.beginPath();
+    state.trajectory.forEach((p,i)=> i? ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (state.flyingBall) {
+    const { x, y } = state.flyingBall;
+    ctx.fillStyle = "#E67E22";
+    ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = "#333"; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  if (state.message) {
+    ctx.font = "bold 36px Arial";
+    ctx.textAlign = "center";
+    ctx.fillStyle = state.message.color;
+    ctx.fillText(state.message.text, w/2, h/2 - 50);
+  }
+}
+
+// ============ ФИЗИКА ============
+function calculateTrajectory(angleDeg, speed, hStart) {
+  const a = angleDeg * Math.PI / 180;
+  const vx = speed * Math.cos(a);
+  const vy = speed * Math.sin(a);
+  const floorY = canvas.height - 100;
+  const startPx = START_X_PIXEL + 22;
+  const points = [];
+  for (let i = 0; i < 400; i++) {
+    const t = i * 0.01;
+    const x = vx * t;
+    const y = hStart + vy * t - 0.5 * G * t * t;
+    if (y < 0) break;
+    const px = startPx + x * PIXELS_PER_METER;
+    const py = floorY - y * PIXELS_PER_METER;
+    points.push({ x: px, y: py });
+    if (px > canvas.width) break;
+  }
+  return points;
+}
+
+// ============ БРОСОК ============
+function shoot() {
+  if (state.animating) return;
+
+  const angle = parseFloat(document.getElementById("angle").value) || 45;
+  const speed = parseFloat(document.getElementById("speed").value) || 7.7;
+
+  state.fansState = 0;
+  state.message = null;
+  state.flyingBall = null;
+  state.trajectoryVisible = false;
+  state.trajectory = [];
+  rebuildScene();
+
+  const a = angle * Math.PI / 180;
+  const vx = speed * Math.cos(a);
+  const vy = speed * Math.sin(a);
+  if (vx === 0) return;
+
+  const timeToHoop = DISTANCE / vx;
+  const heightAtHoop = state.hStart + vy * timeToHoop - 0.5 * G * timeToHoop * timeToHoop;
+  const isHit = Math.abs(heightAtHoop - HOOP_HEIGHT) < 0.15;
+
+  const tbody = document.getElementById("journalBody");
+  const tr = document.createElement("tr");
+  const cls = isHit ? "hit" : "miss";
+  const res = isHit ? "ПОПАЛ! 🎯" : "Промах ❌";
+  tr.innerHTML = `<td>${angle.toFixed(1)}°</td><td>${speed.toFixed(1)} м/с</td><td class="${cls}">${res}</td>`;
+  tbody.insertBefore(tr, tbody.firstChild);
+
+  animateBall(angle, speed, state.hStart, isHit);
+}
+
+function animateBall(angleDeg, speed, hStart, isHit) {
+  state.animating = true;
+  document.getElementById("btnShoot").disabled = true;
+
+  const points = calculateTrajectory(angleDeg, speed, hStart);
+  if (points.length === 0) { finishShot(isHit); return; }
+
+  state.trajectory = points;
+  state.trajectoryVisible = true;
+  const { hoopX, hoopY } = getHoopCoords();
+
+  let index = 0;
+  const step = () => {
+    if (index < points.length) {
+      const { x, y } = points[index];
+      state.flyingBall = { x, y };
+
+      if (isHit && x >= hoopX) { dropThroughNet(x, y); return; }
+      if (!isHit && Math.abs(x - hoopX) < 20 && Math.abs(y - hoopY) < 20) { bounceBall(x, y); return; }
+
+      render();
+      index++;
+      setTimeout(step, 15);
+    } else {
+      finishShot(isHit);
+    }
+  };
+  render();
+  step();
+}
+
+function dropThroughNet(startX, startY) {
+  const { hoopX } = getHoopCoords();
+  let step = 0;
+  const fall = () => {
+    if (step < 15) {
+      state.flyingBall = { x: hoopX, y: startY + step * 4 };
+      render();
+      step++;
+      setTimeout(fall, 20);
+    } else {
+      finishShot(true);
+    }
+  };
+  fall();
+}
+
+function bounceBall(startX, startY) {
+  const vx = 4 + Math.random()*4;
+  const vy = -(2 + Math.random()*4);
+  const pts = [];
+  const floorY = canvas.height - 100;
+  for (let i = 0; i < 50; i++) {
+    const t = i * 0.05;
+    const x = startX + vx * t;
+    const y = startY - (vy * t - 0.5 * G * t * t);
+    if (y > floorY) break;
+    pts.push({x, y});
+  }
+  let idx = 0;
+  const step = () => {
+    if (idx < pts.length) {
+      state.flyingBall = pts[idx];
+      render();
+      idx++;
+      setTimeout(step, 15);
+    } else {
+      finishShot(false);
+    }
+  };
+  step();
+}
+
+function finishShot(isHit) {
+  state.animating = false;
+  document.getElementById("btnShoot").disabled = false;
+
+  if (isHit) {
+    state.fansState = 1;
+    state.flyingBall = null;
+    state.trajectoryVisible = false;
+    state.trajectory = [];
+    rebuildScene();
+  } else {
+    state.fansState = 0;
+    state.flyingBall = null;
+  }
+
+  state.message = isHit
+    ? { text: "ПОПАЛ! 🎯", color: COLORS.SUCCESS }
+    : { text: "ПРОМАХ! ❌", color: COLORS.ERROR };
+  render();
+
+  setTimeout(() => {
+    state.message = null;
+    state.fansState = 0;
+    state.flyingBall = null;
+    state.trajectoryVisible = false;
+    state.trajectory = [];
+    rebuildScene();
+  }, 2000);
+}
+
+// ============ ОБРАБОТКА РОСТА (ПОЛНОЕ ОБНОВЛЕНИЕ) ============
+document.getElementById("btnHeight").addEventListener("click", () => {
+  const input = document.getElementById("height");
+  let v = parseFloat(input.value);
+
+  if (isNaN(v)) {
+    input.value = state.heightCm;
+    return;
+  }
+
+  // Проверка границ
+  if (v < 100) {
+    v = 100;
+    alert("Минимальный рост игрока — 100 см.");
+  } else if (v > 250) {
+    v = 250;
+    alert("Максимальный рост игрока — 250 см.");
+  }
+
+  // Обновляем данные
+  input.value = v;
+  state.heightCm = v;
+  state.hStart = (v / 100) + 0.45;
+
+  // Очищаем журнал и старые состояния
+  document.getElementById("journalBody").innerHTML = "";
+  state.flyingBall = null;
+  state.trajectoryVisible = false;
+  state.trajectory = [];
+  state.message = null;
+
+  // ПЕРЕРИСОВЫВАЕМ ВСЮ СЦЕНУ С НУЛЯ (старый игрок стирается)
+  rebuildScene();
+});
+
+document.getElementById("btnShoot").addEventListener("click", shoot);
+
+// ============ СТАРТ ============
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+</script>
+</body>
+</html>
